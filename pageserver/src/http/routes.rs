@@ -25,6 +25,8 @@ use zenith_utils::zid::{opt_display_serde, ZTimelineId};
 use super::models::BranchCreateRequest;
 use super::models::TenantCreateRequest;
 use crate::branches::BranchInfo;
+use crate::remote_storage::schedule_timeline_download;
+use crate::repository::RepositoryTimeline;
 use crate::repository::TimelineSyncState;
 use crate::{branches, tenant_mgr, PageServerConf, ZTenantId};
 
@@ -204,6 +206,8 @@ struct TimelineInfo {
     timeline_state: Option<TimelineSyncState>,
 }
 
+// TODO should we return something meaningful about remote timelines too
+// No way currently to ckeck uploading by tenant state, it woud be just active or idle (check by s3 consistent lsn?)
 async fn timeline_detail_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
     let tenant_id: ZTenantId = parse_request_param(&request, "tenant_id")?;
     check_permission(&request, Some(tenant_id))?;
@@ -233,6 +237,36 @@ async fn timeline_detail_handler(request: Request<Body>) -> Result<Response<Body
     .map_err(ApiError::from_err)??;
 
     Ok(json_response(StatusCode::OK, response_data)?)
+}
+
+async fn timeline_attach_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
+    let tenant_id: ZTenantId = parse_request_param(&request, "tenant_id")?;
+    check_permission(&request, Some(tenant_id))?;
+
+    let timeline_id: ZTimelineId = parse_request_param(&request, "timeline_id")?;
+
+    let response_data = tokio::task::spawn_blocking(move || {
+        let _enter =
+            info_span!("timeline_attach_handler", tenant = %tenant_id, timeline = %timeline_id)
+                .entered();
+        let repo = tenant_mgr::get_repository_for_tenant(tenant_id)?;
+        match repo.get_timeline(timeline_id)? {
+            RepositoryTimeline::Local(_) => {
+                bail!("Timeline with id {} is already local", timeline_id)
+            }
+            RepositoryTimeline::Remote(_) => {
+                // FIXME this is a bit hacky because there is local_or_schedule_download on LayeredTimelineEntry, but not on RepositoryTimeline
+                // Also it is a good idea to change timeline status to AwaitsDownload (TODO probably incapsulate it somewhere in the repo)
+                repo.set_timeline_state(timeline_id, TimelineSyncState::AwaitsDownload)?;
+                schedule_timeline_download(tenant_id, timeline_id);
+                Ok(())
+            }
+        }
+    })
+    .await
+    .map_err(ApiError::from_err)??;
+
+    Ok(json_response(StatusCode::ACCEPTED, response_data)?)
 }
 
 async fn tenant_list_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
@@ -295,6 +329,10 @@ pub fn make_router(
         .get(
             "/v1/timeline/:tenant_id/:timeline_id",
             timeline_detail_handler,
+        )
+        .get(
+            "/v1/timeline/:tenant_id/:timeline_id/attach",
+            timeline_attach_handler,
         )
         .get("/v1/branch/:tenant_id", branch_list_handler)
         .get("/v1/branch/:tenant_id/:branch_name", branch_detail_handler)

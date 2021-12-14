@@ -349,12 +349,16 @@ class ZenithEnvBuilder:
         self.num_safekeepers = num_safekeepers
         self.pageserver_auth_enabled = pageserver_auth_enabled
         self.env: Optional[ZenithEnv] = None
+        self.auto_start_pageserver = True
 
     def init(self) -> ZenithEnv:
         # Cannot create more than one environment from one builder
         assert self.env is None, "environment already initialized"
         self.env = ZenithEnv(self)
         return self.env
+
+    def set_auto_start_pageserver(self, auto_start_pageserver: bool):
+        self.auto_start_pageserver = auto_start_pageserver
 
     def __enter__(self):
         return self
@@ -468,7 +472,8 @@ sync = false # Disable fsyncs to make the tests go faster
             self.zenith_cli(cmd)
 
         # Start up the page server and all the safekeepers
-        self.pageserver.start()
+        if config.auto_start_pageserver:
+            self.pageserver.start()
 
         for safekeeper in self.safekeepers:
             safekeeper.start()
