@@ -849,7 +849,7 @@ impl Timeline for LayeredTimeline {
         }
         debug_assert!(lsn <= self.get_last_record_lsn());
 
-        let mut segno = 0;
+        let mut segno = self.get_last_segno(rel, lsn).unwrap_or(0);
         loop {
             let seg = SegmentTag { rel, segno };
 
@@ -1210,6 +1210,14 @@ impl LayeredTimeline {
             self.current_logical_size.load(atomic::Ordering::Relaxed)
         );
         Ok(())
+    }
+
+    ///
+    /// Try to get cached last segment number visible at givin LSN
+    ///
+    fn get_last_segno(&self, rel: RelishTag, lsn: Lsn) -> Option<u32> {
+        let self_layers = self.layers.lock().unwrap();
+        self_layers.get_last_segno(rel, lsn)
     }
 
     ///
