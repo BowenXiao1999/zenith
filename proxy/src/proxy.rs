@@ -15,17 +15,19 @@ use zenith_utils::sock_split::{ReadStream, WriteStream};
 ///
 pub fn thread_main(
     state: &'static ProxyState,
-    listener: std::net::TcpListener,
+    listener: zenith_utils::tcp_listener::Socket,
 ) -> anyhow::Result<()> {
     loop {
+        listener.set_nonblocking(true)?;
         let (socket, peer_addr) = listener.accept()?;
-        println!("accepted connection from {}", peer_addr);
+        listener.set_nonblocking(false)?;
+        println!("accepted connection from {:?}", peer_addr);
         socket.set_nodelay(true).unwrap();
 
         thread::Builder::new()
             .name("Proxy thread".into())
             .spawn(move || {
-                if let Err(err) = proxy_conn_main(state, socket) {
+                if let Err(err) = proxy_conn_main(state, TcpStream::from(socket)) {
                     println!("error: {}", err);
                 }
             })?;

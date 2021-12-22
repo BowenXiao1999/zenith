@@ -1,7 +1,4 @@
-use std::{
-    net::{TcpListener, TcpStream},
-    thread,
-};
+use std::{net::TcpStream, thread};
 
 use bytes::Bytes;
 use serde::Deserialize;
@@ -17,14 +14,19 @@ use crate::{cplane_api::DatabaseInfo, ProxyState};
 ///
 /// Listens for connections, and launches a new handler thread for each.
 ///
-pub fn thread_main(state: &'static ProxyState, listener: TcpListener) -> anyhow::Result<()> {
+pub fn thread_main(
+    state: &'static ProxyState,
+    listener: zenith_utils::tcp_listener::Socket,
+) -> anyhow::Result<()> {
     loop {
+        listener.set_nonblocking(true)?;
         let (socket, peer_addr) = listener.accept()?;
-        println!("accepted connection from {}", peer_addr);
+        listener.set_nonblocking(false)?;
+        println!("accepted connection from {:?}", peer_addr);
         socket.set_nodelay(true).unwrap();
 
         thread::spawn(move || {
-            if let Err(err) = handle_connection(state, socket) {
+            if let Err(err) = handle_connection(state, TcpStream::from(socket)) {
                 println!("error: {}", err);
             }
         });

@@ -14,7 +14,6 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::net::TcpListener;
 use std::str;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -185,21 +184,25 @@ impl PagestreamBeMessage {
 pub fn thread_main(
     conf: &'static PageServerConf,
     auth: Option<Arc<JwtAuth>>,
-    listener: TcpListener,
+    listener: zenith_utils::tcp_listener::Socket,
     auth_type: AuthType,
 ) -> anyhow::Result<()> {
     let mut join_handles = Vec::new();
 
     while !tenant_mgr::shutdown_requested() {
+        listener.set_nonblocking(true)?;
         let (socket, peer_addr) = listener.accept()?;
-        debug!("accepted connection from {}", peer_addr);
+        listener.set_nonblocking(false)?;
+        debug!("accepted connection from {:?}", peer_addr);
         socket.set_nodelay(true).unwrap();
         let local_auth = auth.clone();
 
         let handle = thread::Builder::new()
             .name("serving Page Service thread".into())
             .spawn(move || {
-                if let Err(err) = page_service_conn_main(conf, local_auth, socket, auth_type) {
+                if let Err(err) =
+                    page_service_conn_main(conf, local_auth, TcpStream::from(socket), auth_type)
+                {
                     error!(%err, "page server thread exited with error");
                 }
             })

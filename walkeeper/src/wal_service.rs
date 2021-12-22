@@ -4,7 +4,7 @@
 //!
 use anyhow::Result;
 use regex::Regex;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::thread;
 use tracing::*;
 
@@ -17,26 +17,31 @@ use zenith_utils::postgres_backend::{AuthType, PostgresBackend};
 /// Accept incoming TCP connections and spawn them into a background thread.
 pub fn thread_main(
     conf: SafeKeeperConf,
-    listener: TcpListener,
+    listener: zenith_utils::tcp_listener::Socket,
     tx: UnboundedSender<CallmeEvent>,
 ) -> Result<()> {
     loop {
+        listener.set_nonblocking(true)?;
         match listener.accept() {
             Ok((socket, peer_addr)) => {
-                debug!("accepted connection from {}", peer_addr);
+                listener.set_nonblocking(false)?;
+                debug!("accepted connection from {:?}", peer_addr);
                 let conf = conf.clone();
 
                 let tx_clone = tx.clone();
                 let _ = thread::Builder::new()
                     .name("WAL service thread".into())
                     .spawn(move || {
-                        if let Err(err) = handle_socket(socket, conf, tx_clone) {
+                        if let Err(err) = handle_socket(TcpStream::from(socket), conf, tx_clone) {
                             error!("connection handler exited: {}", err);
                         }
                     })
                     .unwrap();
             }
-            Err(e) => error!("Failed to accept connection: {}", e),
+            Err(e) => {
+                listener.set_nonblocking(false)?;
+                error!("Failed to accept connection: {}", e)
+            }
         }
     }
 }

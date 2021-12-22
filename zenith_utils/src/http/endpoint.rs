@@ -8,11 +8,11 @@ use lazy_static::lazy_static;
 use routerify::ext::RequestExt;
 use routerify::RequestInfo;
 use routerify::{Middleware, Router, RouterBuilder, RouterService};
-use std::net::TcpListener;
 use tracing::info;
 use zenith_metrics::{new_common_metric_name, register_int_counter, IntCounter};
 use zenith_metrics::{Encoder, TextEncoder};
 
+use std::net::TcpListener;
 use std::sync::Mutex;
 use tokio::sync::oneshot::Sender;
 
@@ -162,8 +162,9 @@ pub fn shutdown() {
 
 pub fn serve_thread_main(
     router_builder: RouterBuilder<hyper::Body, ApiError>,
-    listener: TcpListener,
+    listener: crate::tcp_listener::Socket,
 ) -> anyhow::Result<()> {
+    let listener = TcpListener::from(listener);
     info!("Starting a http endpoint at {}", listener.local_addr()?);
 
     // Create a Service from the router above to handle incoming requests.
