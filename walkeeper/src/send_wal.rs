@@ -23,7 +23,7 @@ use tracing::*;
 use zenith_utils::bin_ser::BeSer;
 use zenith_utils::lsn::Lsn;
 use zenith_utils::postgres_backend::PostgresBackend;
-use zenith_utils::pq_proto::{BeMessage, FeMessage, WalSndKeepAlive, XLogDataBody};
+use zenith_utils::pq_proto::{BeMessage, FeMessage, WalSndKeepAlive, XLogDataBody, ZenithFeedback};
 use zenith_utils::sock_split::ReadStream;
 
 use crate::callmemaybe::CallmeEvent;
@@ -33,6 +33,8 @@ use zenith_utils::zid::{ZTenantId, ZTimelineId};
 // See: https://www.postgresql.org/docs/13/protocol-replication.html
 const HOT_STANDBY_FEEDBACK_TAG_BYTE: u8 = b'h';
 const STANDBY_STATUS_UPDATE_TAG_BYTE: u8 = b'r';
+// zenith extension of replication protocol
+const ZENITH_STATUS_UPDATE_TAG_BYTE: u8 = b'z';
 
 type FullTransactionId = u64;
 
@@ -132,8 +134,8 @@ impl ReplicationConn {
         while let Some(msg) = FeMessage::read(&mut stream_in)? {
             match &msg {
                 FeMessage::CopyData(m) => {
-                    // There's two possible data messages that the client is supposed to send here:
-                    // `HotStandbyFeedback` and `StandbyStatusUpdate`.
+                    // There's three possible data messages that the client is supposed to send here:
+                    // `HotStandbyFeedback` and `StandbyStatusUpdate` and `ZenithStandbyFeedback`.
 
                     match m.first().cloned() {
                         Some(HOT_STANDBY_FEEDBACK_TAG_BYTE) => {
@@ -148,6 +150,16 @@ impl ReplicationConn {
                             state.last_received_lsn = reply.write_lsn;
                             state.disk_consistent_lsn = reply.flush_lsn;
                             state.remote_consistent_lsn = reply.apply_lsn;
+                            timeline.update_replica_state(replica_id, Some(state));
+                        }
+                        Some(ZENITH_STATUS_UPDATE_TAG_BYTE) => {
+                            // Note: deserializing is on m[9..] because we skip the tag byte and len bytes.
+                            let reply = ZenithFeedback::des(&m[9..])
+                                .context("failed to deserialize ZenithFeedback")?;
+
+                            info!("ZenithFeedback is {:?}", reply);
+                            state.current_instance_size = reply.current_instance_size;
+
                             timeline.update_replica_state(replica_id, Some(state));
                         }
                         _ => warn!("unexpected message {:?}", msg),

@@ -7,6 +7,7 @@ use byteorder::{BigEndian, ByteOrder};
 use byteorder::{ReadBytesExt, BE};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 // use postgres_ffi::xlog_utils::TimestampTz;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
 use std::io::Read;
@@ -484,7 +485,7 @@ where
 }
 
 /// Safe write of s into buf as cstring (String in the protocol).
-fn write_cstr(s: &[u8], buf: &mut BytesMut) -> Result<(), io::Error> {
+pub fn write_cstr(s: &[u8], buf: &mut BytesMut) -> Result<(), io::Error> {
     if s.contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -766,5 +767,23 @@ impl<'a> BeMessage<'a> {
             }
         }
         Ok(())
+    }
+}
+
+// Zenith extension of postgres replication protocol
+// See ZENITH_STATUS_UPDATE_TAG_BYTE
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZenithFeedback {
+    // Last known size of the timeline. Used to enforce timeline size limit.
+    pub current_instance_size: u64,
+}
+
+pub const ZENITH_FEEDBACK_FIELDS_NUMBER: u8 = 1;
+
+impl ZenithFeedback {
+    pub fn empty() -> ZenithFeedback {
+        ZenithFeedback {
+            current_instance_size: 0,
+        }
     }
 }

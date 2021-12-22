@@ -27,7 +27,9 @@ use std::thread::JoinHandle;
 use std::thread_local;
 use std::time::SystemTime;
 use tracing::*;
+use zenith_utils::bin_ser::BeSer;
 use zenith_utils::lsn::Lsn;
+use zenith_utils::pq_proto::ZenithFeedback;
 use zenith_utils::zid::ZTenantId;
 use zenith_utils::zid::ZTimelineId;
 
@@ -299,7 +301,19 @@ fn walreceiver_main(
             let apply_lsn = PgLsn::from(u64::from(timeline_synced_disk_consistent_lsn));
             let ts = SystemTime::now();
             const NO_REPLY: u8 = 0;
+            info!(
+                "standby_status_update write_lsn {}, flush_lsn {}, apply_lsn {}",
+                write_lsn, flush_lsn, apply_lsn
+            );
             physical_stream.standby_status_update(write_lsn, flush_lsn, apply_lsn, ts, NO_REPLY)?;
+
+            // Also send zenith specific feedback.
+            let zenith_status_update = ZenithFeedback {
+                // Last known size of the timeline. Used to enforce timeline size limit.
+                current_instance_size: timeline.get_current_logical_size() as u64,
+            };
+            let data = ZenithFeedback::ser(&zenith_status_update)?;
+            physical_stream.zenith_status_update(data.len() as u64, &data)?;
         }
 
         if tenant_mgr::shutdown_requested() {

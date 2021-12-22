@@ -27,6 +27,7 @@ use crate::upgrade::upgrade_control_file;
 use crate::SafeKeeperConf;
 use postgres_ffi::xlog_utils::{XLogFileName, XLOG_BLCKSZ};
 use std::convert::TryInto;
+use zenith_utils::pq_proto::ZenithFeedback;
 
 // contains persistent metadata for safekeeper
 const CONTROL_FILE_NAME: &str = "safekeeper.control";
@@ -44,8 +45,11 @@ pub struct ReplicaState {
     pub disk_consistent_lsn: Lsn,
     /// combined remote consistent lsn of pageservers
     pub remote_consistent_lsn: Lsn,
+    /// logical size of the timeline on pageserver
+    pub current_instance_size: u64,
     /// combined hot standby feedback from all replicas
     pub hs_feedback: HotStandbyFeedback,
+    pub zenith_feedback: ZenithFeedback,
 }
 
 impl Default for ReplicaState {
@@ -60,11 +64,13 @@ impl ReplicaState {
             last_received_lsn: Lsn::MAX,
             disk_consistent_lsn: Lsn(u64::MAX),
             remote_consistent_lsn: Lsn(u64::MAX),
+            current_instance_size: 0,
             hs_feedback: HotStandbyFeedback {
                 ts: 0,
                 xmin: u64::MAX,
                 catalog_xmin: u64::MAX,
             },
+            zenith_feedback: ZenithFeedback::empty(),
         }
     }
 }
@@ -110,12 +116,17 @@ impl SharedState {
             acc.hs_feedback.catalog_xmin =
                 min(acc.hs_feedback.catalog_xmin, state.hs_feedback.catalog_xmin);
             acc.disk_consistent_lsn = Lsn::min(acc.disk_consistent_lsn, state.disk_consistent_lsn);
-            // currently not used, but update it to be consistent
             acc.last_received_lsn = Lsn::min(acc.last_received_lsn, state.last_received_lsn);
             // When at least one replica has preserved data up to remote_consistent_lsn,
             // safekeeper is free to delete it, so chose max of all replicas.
             acc.remote_consistent_lsn =
-                Lsn::max(acc.remote_consistent_lsn, state.remote_consistent_lsn);
+                Lsn::min(acc.remote_consistent_lsn, state.remote_consistent_lsn);
+            // FIXME
+            // This is incorrect.
+            // We need to use the answer from the safekeeper
+            // that is currently receiving this info from pageserver.
+            // How to know which one it is?
+            acc.current_instance_size = max(acc.current_instance_size, state.current_instance_size);
         }
         acc
     }
@@ -280,7 +291,7 @@ impl Timeline {
                 let state = shared_state.get_replicas_state();
                 resp.hs_feedback = state.hs_feedback;
                 resp.disk_consistent_lsn = state.disk_consistent_lsn;
-                // XXX Do we need to add state.last_received_lsn to resp?
+                resp.zenith_feedback.current_instance_size = state.current_instance_size;
             }
         }
         // Ping wal sender that new data might be available.
