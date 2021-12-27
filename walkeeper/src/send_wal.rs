@@ -9,6 +9,8 @@ use postgres_ffi::xlog_utils::{
     get_current_timestamp, TimestampTz, XLogFileName, MAX_SEND_SIZE, PG_TLI,
 };
 
+use crate::callmemaybe::CallmeEvent;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::fs::File;
@@ -19,15 +21,13 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 use std::{str, thread};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::*;
 use zenith_utils::bin_ser::BeSer;
 use zenith_utils::lsn::Lsn;
 use zenith_utils::postgres_backend::PostgresBackend;
 use zenith_utils::pq_proto::{BeMessage, FeMessage, WalSndKeepAlive, XLogDataBody, ZenithFeedback};
 use zenith_utils::sock_split::ReadStream;
-
-use crate::callmemaybe::CallmeEvent;
-use tokio::sync::mpsc::UnboundedSender;
 use zenith_utils::zid::{ZTenantId, ZTimelineId};
 
 // See: https://www.postgresql.org/docs/13/protocol-replication.html
@@ -145,20 +145,25 @@ impl ReplicationConn {
                             timeline.update_replica_state(replica_id, Some(state));
                         }
                         Some(STANDBY_STATUS_UPDATE_TAG_BYTE) => {
-                            let reply = StandbyReply::des(&m[1..])
+                            let _reply = StandbyReply::des(&m[1..])
                                 .context("failed to deserialize StandbyReply")?;
-                            state.last_received_lsn = reply.write_lsn;
-                            state.disk_consistent_lsn = reply.flush_lsn;
-                            state.remote_consistent_lsn = reply.apply_lsn;
-                            timeline.update_replica_state(replica_id, Some(state));
+                            // This must be a regular postgres replica,
+                            // because pageserver doesn't send this type of messages to safekeeper.
+                            // Currently this is not implemented, so this message is ignored.
+
+                            // state.is_pageserver = false;
+                            // timeline.update_replica_state(replica_id, Some(state));
                         }
                         Some(ZENITH_STATUS_UPDATE_TAG_BYTE) => {
                             // Note: deserializing is on m[9..] because we skip the tag byte and len bytes.
-                            let reply = ZenithFeedback::des(&m[9..])
-                                .context("failed to deserialize ZenithFeedback")?;
+                            let buf = Bytes::copy_from_slice(&m[9..]);
+                            let reply = ZenithFeedback::parse(buf);
 
                             info!("ZenithFeedback is {:?}", reply);
-                            state.current_instance_size = reply.current_instance_size;
+                            // Only pageserver sends ZenithFeedback, so set the flag.
+                            // This replica is the source of information to resend to compute.
+                            state.is_pageserver = true;
+                            state.zenith_feedback = reply;
 
                             timeline.update_replica_state(replica_id, Some(state));
                         }

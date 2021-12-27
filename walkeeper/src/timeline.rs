@@ -36,19 +36,20 @@ const CONTROL_FILE_NAME_PARTIAL: &str = "safekeeper.control.partial";
 const POLL_STATE_TIMEOUT: Duration = Duration::from_secs(1);
 pub const CHECKSUM_SIZE: usize = std::mem::size_of::<u32>();
 
-/// Replica status: host standby feedback + disk consistent lsn
+/// Replica status update + hot standby feedback
 #[derive(Debug, Clone, Copy)]
 pub struct ReplicaState {
+    /// is this replica a pageserver?
+    pub is_pageserver: bool,
     /// last known lsn received by replica
+    // TODO: refactor further. this field repeats zenith_feedback.ps_write_lsn
     pub last_received_lsn: Lsn, // None means we don't know
-    /// combined disk_consistent_lsn of pageservers
-    pub disk_consistent_lsn: Lsn,
     /// combined remote consistent lsn of pageservers
+    // TODO: refactor further. this field repeats zenith_feedback.ps_apply_lsn
     pub remote_consistent_lsn: Lsn,
-    /// logical size of the timeline on pageserver
-    pub current_instance_size: u64,
     /// combined hot standby feedback from all replicas
     pub hs_feedback: HotStandbyFeedback,
+    /// Zenith specific feedback received from pageserver
     pub zenith_feedback: ZenithFeedback,
 }
 
@@ -61,10 +62,9 @@ impl Default for ReplicaState {
 impl ReplicaState {
     pub fn new() -> ReplicaState {
         ReplicaState {
+            is_pageserver: false,
             last_received_lsn: Lsn::MAX,
-            disk_consistent_lsn: Lsn(u64::MAX),
-            remote_consistent_lsn: Lsn(u64::MAX),
-            current_instance_size: 0,
+            remote_consistent_lsn: Lsn(0),
             hs_feedback: HotStandbyFeedback {
                 ts: 0,
                 xmin: u64::MAX,
@@ -115,18 +115,18 @@ impl SharedState {
             acc.hs_feedback.xmin = min(acc.hs_feedback.xmin, state.hs_feedback.xmin);
             acc.hs_feedback.catalog_xmin =
                 min(acc.hs_feedback.catalog_xmin, state.hs_feedback.catalog_xmin);
-            acc.disk_consistent_lsn = Lsn::min(acc.disk_consistent_lsn, state.disk_consistent_lsn);
-            acc.last_received_lsn = Lsn::min(acc.last_received_lsn, state.last_received_lsn);
-            // When at least one replica has preserved data up to remote_consistent_lsn,
-            // safekeeper is free to delete it, so chose max of all replicas.
-            acc.remote_consistent_lsn =
-                Lsn::min(acc.remote_consistent_lsn, state.remote_consistent_lsn);
-            // FIXME
-            // This is incorrect.
-            // We need to use the answer from the safekeeper
-            // that is currently receiving this info from pageserver.
-            // How to know which one it is?
-            acc.current_instance_size = max(acc.current_instance_size, state.current_instance_size);
+
+            // Here we assume that only one active pageserver
+            // can be connected to the safekeeper at a time.
+            // If it isn't true, calculate acc values from feedbacks.
+            if state.is_pageserver {
+                acc.zenith_feedback = state.zenith_feedback;
+                // last lsn received by pageserver
+                acc.last_received_lsn = Lsn::from(state.zenith_feedback.ps_writelsn);
+                // When pageserver has preserved data up to remote_consistent_lsn,
+                // safekeeper is free to delete it.
+                acc.remote_consistent_lsn = Lsn::from(state.zenith_feedback.ps_applylsn);
+            }
         }
         acc
     }
@@ -290,8 +290,7 @@ impl Timeline {
             if let Some(AcceptorProposerMessage::AppendResponse(ref mut resp)) = rmsg {
                 let state = shared_state.get_replicas_state();
                 resp.hs_feedback = state.hs_feedback;
-                resp.disk_consistent_lsn = state.disk_consistent_lsn;
-                resp.zenith_feedback.current_instance_size = state.current_instance_size;
+                resp.zenith_feedback = state.zenith_feedback;
             }
         }
         // Ping wal sender that new data might be available.

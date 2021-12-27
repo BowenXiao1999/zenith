@@ -26,9 +26,8 @@ use zenith_metrics::{
 };
 use zenith_utils::bin_ser::LeSer;
 use zenith_utils::lsn::Lsn;
-use zenith_utils::pq_proto::write_cstr;
 use zenith_utils::pq_proto::SystemId;
-use zenith_utils::pq_proto::{ZenithFeedback, ZENITH_FEEDBACK_FIELDS_NUMBER};
+use zenith_utils::pq_proto::ZenithFeedback;
 use zenith_utils::zid::{ZTenantId, ZTimelineId};
 
 pub const SK_MAGIC: u32 = 0xcafeceefu32;
@@ -282,8 +281,6 @@ pub struct AppendResponse {
     // We report back our awareness about which WAL is committed, as this is
     // a criterion for walproposer --sync mode exit
     pub commit_lsn: Lsn,
-    // Min disk consistent lsn of pageservers (portion of WAL applied and written to the disk by pageservers)
-    pub disk_consistent_lsn: Lsn,
     pub hs_feedback: HotStandbyFeedback,
     pub zenith_feedback: ZenithFeedback,
 }
@@ -294,7 +291,6 @@ impl AppendResponse {
             term,
             flush_lsn: Lsn(0),
             commit_lsn: Lsn(0),
-            disk_consistent_lsn: Lsn(0),
             hs_feedback: HotStandbyFeedback::empty(),
             zenith_feedback: ZenithFeedback::empty(),
         }
@@ -401,14 +397,11 @@ impl AcceptorProposerMessage {
                 buf.put_u64_le(msg.term);
                 buf.put_u64_le(msg.flush_lsn.into());
                 buf.put_u64_le(msg.commit_lsn.into());
-                buf.put_u64_le(msg.disk_consistent_lsn.into());
                 buf.put_i64_le(msg.hs_feedback.ts);
                 buf.put_u64_le(msg.hs_feedback.xmin);
                 buf.put_u64_le(msg.hs_feedback.catalog_xmin);
 
-                buf.put_u8(ZENITH_FEEDBACK_FIELDS_NUMBER); // # of keys
-                write_cstr(&Bytes::from("current_instance_size"), buf)?;
-                buf.put_u64(msg.zenith_feedback.current_instance_size);
+                msg.zenith_feedback.serialize(buf)?
             }
         }
 
@@ -624,7 +617,6 @@ where
             term: self.s.acceptor_state.term,
             flush_lsn: self.flush_lsn,
             commit_lsn: self.s.commit_lsn,
-            disk_consistent_lsn: Lsn(0),
             // will be filled by the upper code to avoid bothering safekeeper
             hs_feedback: HotStandbyFeedback::empty(),
             zenith_feedback: ZenithFeedback::empty(),
